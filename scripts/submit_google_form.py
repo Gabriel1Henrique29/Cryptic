@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import random
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -14,9 +15,11 @@ FORM_ID = "1FAIpQLSfHadmQFS-vjpIqr7m2lw1bOXB_C14wx8g9yEtgXJgz3Up0lA"
 FORM_URL = f"https://docs.google.com/forms/d/e/{FORM_ID}/formResponse"
 VIEW_URL = f"https://docs.google.com/forms/d/e/{FORM_ID}/viewform"
 FBZX = "-5346189538593769706"
+# All pages must be listed or Google records only the timestamp (page 0).
+PAGE_HISTORY = "0,1,2,3,4,5,6,7,8,9,10,11,12"
 
-# Multiple-choice questions: entry_id -> correct option text
-QUESTIONS: dict[int, str] = {
+# Valid answers (from quiz key / spreadsheet majority)
+VALID_ANSWERS: dict[int, str] = {
     187353751: "b) 35",
     1500585471: "d) 900",
     1392109831: "d) 30",
@@ -110,20 +113,20 @@ REFERRERS = [
 
 
 def pick_answer(entry_id: int, correct_probability: float, rng: random.Random) -> str:
-    correct = QUESTIONS[entry_id]
-    options = OPTIONS_BY_QUESTION[entry_id]
+    correct = VALID_ANSWERS[entry_id]
     if rng.random() < correct_probability:
         return correct
+    options = OPTIONS_BY_QUESTION[entry_id]
     wrong = [o for o in options if o != correct]
     return rng.choice(wrong)
 
 
 def build_payload(index: int, correct_probability: float, seed: int | None) -> dict[str, str]:
     rng = random.Random((seed or 0) + index)
-    answers: dict[str, str] = {}
-    for entry_id in QUESTIONS:
-        answers[f"entry.{entry_id}"] = pick_answer(entry_id, correct_probability, rng)
-
+    answers = {
+        f"entry.{entry_id}": pick_answer(entry_id, correct_probability, rng)
+        for entry_id in VALID_ANSWERS
+    }
     first = rng.choice(FIRST_NAMES)
     last = rng.choice(LAST_NAMES)
     answers["entry.1001904144"] = f"{first} {last} {index:04d}"
@@ -133,7 +136,7 @@ def build_payload(index: int, correct_probability: float, seed: int | None) -> d
 
 def submit_once(payload: dict[str, str], timeout: float) -> tuple[bool, str]:
     data = list(payload.items()) + [
-        ("pageHistory", "0"),
+        ("pageHistory", PAGE_HISTORY),
         ("fvv", "1"),
         ("fbzx", FBZX),
         ("submissionTimestamp", "-1"),
@@ -151,7 +154,9 @@ def submit_once(payload: dict[str, str], timeout: float) -> tuple[bool, str]:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             body = resp.read().decode("utf-8", errors="replace").lower()
             if resp.status == 200 and (
-                "resposta foi registrada" in body or "recorded" in body or "obrigado" in body
+                "resposta foi registrada" in body
+                or "recorded" in body
+                or "obrigado" in body
             ):
                 return True, "ok"
             return False, f"unexpected_status_{resp.status}"
@@ -163,12 +168,12 @@ def submit_once(payload: dict[str, str], timeout: float) -> tuple[bool, str]:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--count", type=int, default=1924)
+    parser.add_argument("--count", type=int, default=750)
     parser.add_argument(
         "--correct-probability",
         type=float,
-        default=0.45,
-        help="Chance each question gets the correct answer (0-1).",
+        default=1.0,
+        help="1.0 = always use valid answers from VALID_ANSWERS.",
     )
     parser.add_argument("--delay", type=float, default=0.35, help="Seconds between submissions.")
     parser.add_argument("--seed", type=int, default=42)
@@ -187,19 +192,21 @@ def main() -> None:
             success += 1
         else:
             failed += 1
-            print(f"[{i}] FAIL: {detail}")
+            print(f"[{i}] FAIL: {detail}", flush=True)
 
         if i % 25 == 0 or i == args.start + args.count - 1:
             elapsed = time.time() - start_time
             print(
-                f"Progress: {i - args.start + 1}/{args.count} | ok={success} fail={failed} | {elapsed:.0f}s"
+                f"Progress: {i - args.start + 1}/{args.count} | ok={success} fail={failed} | {elapsed:.0f}s",
+                flush=True,
             )
 
         if args.delay > 0 and i < args.start + args.count - 1:
             time.sleep(args.delay)
 
     elapsed = time.time() - start_time
-    print(f"Done. success={success} failed={failed} elapsed={elapsed:.1f}s")
+    print(f"Done. success={success} failed={failed} elapsed={elapsed:.1f}s", flush=True)
+    sys.exit(1 if failed else 0)
 
 
 if __name__ == "__main__":
